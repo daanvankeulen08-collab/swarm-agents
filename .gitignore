@@ -1,0 +1,40 @@
+# Environment variables - NOOIT committen!
+.env
+.env.local
+*.env
+
+# State files - te groot en dynamisch
+state/*.json
+!state/.gitkeep
+
+# Products - gegenereerde bestanden
+products/output/*
+!products/output/.gitkeep
+
+# Packages - ZIP bestanden
+packages/*.zip
+
+# Research data
+research/raw_data/
+research/cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
