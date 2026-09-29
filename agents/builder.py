@@ -54,7 +54,12 @@ from core.product_packager import ProductPackager
 from core.state_manager import StateManager
 from core.test_runner import TestRunner
 
-__all__ = ["BuilderAgent", "BUILDER_SYSTEM_PROMPT", "PRODUCTS_DIR"]
+__all__ = [
+    "BuilderAgent",
+    "BUILDER_SYSTEM_PROMPT",
+    "PRODUCTS_DIR",
+    "FALLBACK_SECTIONS",
+]
 
 #: Role instructions sent as the system prompt for every build call.
 BUILDER_SYSTEM_PROMPT: str = (
@@ -65,6 +70,17 @@ BUILDER_SYSTEM_PROMPT: str = (
 
 #: Directory (relative to the working directory) holding built product files.
 PRODUCTS_DIR: str = "products"
+
+#: Section titles built one-by-one by the section-by-section fallback.
+#: Each entry is (display title, accepted keyword variants for detection).
+FALLBACK_SECTIONS: tuple = (
+    ("Weekly Appointment Grid", ("appointment grid",)),
+    ("Client Database", ("client database", "facility database")),
+    ("Medical Terminology", ("medical terminology",)),
+    ("Invoice Tracking", ("invoice tracking", "invoice")),
+    ("Certification Deadlines", ("certification deadline", "certification")),
+    ("Assignment Notes", ("assignment notes", "protocol notes")),
+)
 
 _console = Console()
 
@@ -196,6 +212,171 @@ class BuilderAgent:
             f"({len(product_content)} characters)"
         )
         return product_content
+
+    def build_product_with_fallback(
+        self,
+        opportunity: Dict[str, Any] = None,
+        feedback: Optional[str] = None,
+    ) -> str:
+        """Build a complete template, falling back to section-by-section.
+
+        Strategy (detect-and-fallback, no artificial output limits):
+
+        1. **Full generation** — calls :meth:`build_product` with NO word
+           limits (``"Create a complete, detailed template. Include all 6
+           sections with full content."`` plus any ``feedback``).
+        2. **Completeness validation** — every one of ``FALLBACK_SECTIONS``
+           must be present and the text must show no truncation signals
+           (``...`` placeholders, "continued" markers, abrupt endings).
+        3. **Section-by-section fallback** — if validation fails, each of
+           the 6 sections is generated with its own API call
+           (``"You are building ONE section of a template. Generate ONLY
+           this section, complete and detailed."``) and the outputs are
+           combined under one H1 title with ``##`` section headers.
+
+        Args:
+            opportunity: Opportunity dict (same rule as :meth:`build_product`;
+                ``None`` uses the first Scout finding in state).
+            feedback: Optional extra instructions appended to the
+                full-generation prompt (e.g. reviewer notes). Never imposes
+                word limits.
+
+        Returns:
+            The final complete template (saved via :meth:`save_product`).
+
+        Raises:
+            ValueError: If the opportunity is malformed or a generated
+                section fails validation.
+            RuntimeError: If any API call fails.
+        """
+        if opportunity is None:
+            opportunity = self._load_first_opportunity()
+        else:
+            opportunity = self._checked_opportunity(opportunity)
+        product_name = str(opportunity["product_name"]).strip()
+        audience = str(opportunity.get("target_audience", "")).strip() or "user"
+
+        full_directive = (
+            "Create a complete, detailed template. Include all 6 sections "
+            "with full content. There is NO word limit — completeness and "
+            "detail matter more than brevity. Never truncate, never use "
+            "'...' placeholders, never end mid-section."
+        )
+        combined_feedback = (
+            f"{full_directive}\n{feedback.strip()}"
+            if feedback and feedback.strip()
+            else full_directive
+        )
+        try:
+            full = self.build_product(
+                opportunity=opportunity, feedback=combined_feedback
+            )
+        except (RuntimeError, ValueError) as exc:
+            _console.print(
+                f"[yellow]Full generation unusable ({exc}); switching to "
+                "section-by-section fallback.[/yellow]"
+            )
+            return self._build_section_by_section(opportunity)
+
+        problem = self._completeness_error(full)
+        if problem is None:
+            _console.print(
+                "[green]Full generation passed completeness validation "
+                "(all 6 sections, no truncation).[/green]"
+            )
+            return full
+
+        _console.print(
+            "[yellow]Truncation detected, switching to section-by-section "
+            f"fallback ({problem})[/yellow]"
+        )
+        return self._build_section_by_section(opportunity)
+
+    def _build_section_by_section(self, opportunity: Dict[str, Any]) -> str:
+        """Generate each of the 6 sections separately and combine them."""
+        product_name = str(opportunity["product_name"]).strip()
+        audience = str(opportunity.get("target_audience", "")).strip() or "user"
+        parts: List[str] = []
+        for title, _ in FALLBACK_SECTIONS:
+            _console.print(
+                f"[cyan]Building section:[/cyan] [bold]{title}[/bold]…"
+            )
+            try:
+                raw = self.orchestrator.ask_agent(
+                    system_prompt=(
+                        "You are building ONE section of a template. "
+                        "Generate ONLY this section, complete and detailed."
+                    ),
+                    user_prompt=(
+                        f"Generate the '{title}' section for a "
+                        f"{product_name} ({audience}). Use Markdown with full "
+                        "tables/checklists and realistic example rows. "
+                        "Complete and detailed — no truncation, no '...' "
+                        "placeholders. Output ONLY the section content."
+                    ),
+                    state_manager=self.state_manager,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Section build failed for '{title}': "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            body = self._extract_product_content(raw).strip()
+            if not body:
+                raise ValueError(
+                    f"Section '{title}' came back empty; aborting fallback."
+                )
+            # Avoid a duplicated heading when the model echoes the title.
+            first_line = body.splitlines()[0].strip().lstrip("#").strip().lower()
+            if first_line == title.lower():
+                body = "\n".join(body.splitlines()[1:]).strip()
+            parts.append(f"## {title}\n\n{body}")
+            _console.print(f"[green]  Section '{title}' done.[/green]")
+
+        combined = f"# {product_name}\n\n" + "\n\n".join(parts) + "\n"
+        reason = self._validation_error(combined)
+        if reason is not None:
+            raise ValueError(
+                f"Combined section-by-section template failed validation: {reason}"
+            )
+        problem = self._completeness_error(combined)
+        if problem is not None:
+            raise ValueError(
+                f"Combined template still incomplete after fallback: {problem}"
+            )
+        self.save_product(combined, product_name)
+        _console.print(
+            f"[bold green]Section-by-section build complete "
+            f"({len(combined)} characters).[/bold green]"
+        )
+        return combined
+
+    @staticmethod
+    def _completeness_error(content: Any) -> Optional[str]:
+        """Return None when all 6 sections are present and text looks whole.
+
+        Detects: missing sections, ``...``/ellipsis placeholders,
+        continuation markers, and abrupt endings (trailing ``...``,
+        ``:``, ``,``, ``-`` with no closing content).
+        """
+        if not isinstance(content, str) or not content.strip():
+            return "content is empty."
+        lowered = re.sub(r"\s+", " ", content.lower())
+        missing = [
+            title
+            for title, variants in FALLBACK_SECTIONS
+            if not any(v in lowered for v in variants)
+        ]
+        if missing:
+            return f"missing sections: {missing}."
+        for marker in ("...", "…", "to be continued", "[truncated",
+                       "(continued", "more to come"):
+            if marker in lowered:
+                return f"truncation marker detected: {marker!r}."
+        tail = content.strip()[-120:]
+        if re.search(r"(\.\.\.|…|:|,|-|—)\s*$", tail):
+            return "text ends abruptly (trailing punctuation, no closing)."
+        return None
 
     def build_with_testing(
         self, opportunity: Dict[str, Any] = None, max_attempts: int = 3
