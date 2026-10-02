@@ -148,6 +148,72 @@ PRODUCT_PROFILES: Dict[str, Dict[str, Any]] = {
             ),
         ),
     },
+    "weekly_meal_planning": {
+        "product_name": "Weekly Meal Planner",
+        "niche": "meal_planning",
+        "price": 15,
+        "opportunity": {
+            "product_name": "Weekly Meal Planner",
+            "target_audience": (
+                "busy professionals and households planning healthy "
+                "weekly meals"
+            ),
+            "pain_point": (
+                "weeknight cooking stress, grocery waste, and scattered "
+                "recipes with no weekly plan"
+            ),
+            "estimated_price": 15,
+            "unique_value_proposition": (
+                "One template that plans the week, stores recipes, lists "
+                "groceries, guides batch prep, and tracks the food budget"
+            ),
+            "estimated_build_time": "2 hours",
+        },
+        # Sections come straight from the Scout SearXNG research run
+        # (test_scout_search): weekly calendar, recipe database, grocery /
+        # inventory list, pre-filled examples, prep planning. Every section
+        # must hold at least 150 words — comfortably above the 120-word
+        # degeneracy floor — with pre-filled example rows, never stubs.
+        "sections": (
+            (
+                "Weekly Meal Calendar",
+                ("weekly meal calendar", "meal calendar", "calendar"),
+                "Weekly meal calendar — Markdown table with Day | "
+                "Breakfast | Lunch | Dinner | Snacks columns and 7 "
+                "pre-filled example rows (Monday–Sunday), at least 150 "
+                "words of planning content",
+            ),
+            (
+                "Recipe Database",
+                ("recipe database", "recipe", "recipes"),
+                "Recipe database — recipe template fields (name, "
+                "ingredients, instructions, prep time) plus 5-10 "
+                "pre-filled example recipes across Breakfast, Lunch, "
+                "Dinner, and Snacks, at least 150 words",
+            ),
+            (
+                "Grocery List",
+                ("grocery list", "grocery", "shopping"),
+                "Grocery list — Markdown checkbox list grouped by "
+                "Produce, Proteins, Dairy, Pantry, and Frozen with "
+                "30-50 pre-filled items, at least 150 words",
+            ),
+            (
+                "Meal Prep Guide",
+                ("meal prep guide", "meal prep", "prep"),
+                "Meal prep guide — weekly prep schedule, batch-cooking "
+                "tips, and storage guidelines with times and "
+                "temperatures, at least 150 words",
+            ),
+            (
+                "Budget Tracker",
+                ("budget tracker", "budget", "cost"),
+                "Budget tracker — weekly grocery budget table, cost-per-"
+                "meal calculation, and monthly summary with example "
+                "figures, at least 150 words",
+            ),
+        ),
+    },
 }
 
 
