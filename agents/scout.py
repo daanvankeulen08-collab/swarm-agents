@@ -124,6 +124,51 @@ class ScoutAgent:
         # most recent research_opportunities() call (default €5-€20).
         self._target_price_range: Tuple[float, float] = (5.0, 20.0)
 
+    def research_niche(self, niche_query: str) -> Dict[str, Any]:
+        """Research a niche using live search data.
+
+        Runs several SearXNG searches for the niche, then asks the model to
+        synthesise market insights from the results via
+        :meth:`Orchestrator.search_and_ask`.
+
+        Args:
+            niche_query: Niche focus, e.g. ``"weekly meal planning"``.
+
+        Returns:
+            Dict with ``niche``, ``research`` (the model synthesis),
+            and ``search_queries`` (the queries that were executed).
+
+        Raises:
+            ValueError: If ``niche_query`` is empty.
+        """
+        cleaned = niche_query.strip() if isinstance(niche_query, str) else ""
+        if not cleaned:
+            raise ValueError("niche_query must be a non-empty string.")
+        search_queries = [
+            f"best {cleaned} Notion templates 2026",
+            f"popular {cleaned} productivity templates",
+            f"{cleaned} Notion template examples",
+        ]
+        research_response = self.orchestrator.search_and_ask(
+            query=(
+                f"Based on search results, what are the most popular "
+                f"{cleaned} Notion templates? What sections do they "
+                f"include? What pricing is typical?"
+            ),
+            search_queries=search_queries,
+            system_prompt=(
+                "You are a market research analyst specializing in "
+                "Notion templates."
+            ),
+            max_search_results=5,
+            state_manager=self.state_manager,
+        )
+        return {
+            "niche": cleaned,
+            "research": research_response,
+            "search_queries": search_queries,
+        }
+
     def research_opportunities(
         self,
         niche: str,
