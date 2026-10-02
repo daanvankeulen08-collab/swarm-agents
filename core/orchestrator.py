@@ -64,6 +64,7 @@ from dotenv import load_dotenv
 from openai import APIConnectionError, APITimeoutError, OpenAI
 from rich.console import Console
 
+from .search_client import SearchClient
 from .state_manager import (
     ZEN_CIRCUIT_BREAKER_TRIPS,
     ProjectState,
@@ -518,6 +519,86 @@ class Orchestrator:
         return self.ask_primary_agent(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            state_manager=state_manager,
+        )
+
+    def search_and_ask(
+        self,
+        query: str,
+        search_queries: List[str],
+        system_prompt: str,
+        state_manager: StateManager,
+        max_search_results: int = 5,
+        search_client: Optional[SearchClient] = None,
+    ) -> str:
+        """Ask the model with keyed search results injected as context.
+
+        Search runs first through the keyless :class:`SearchClient`
+        (SearXNG public instances); the formatted results are prepended to the user
+        prompt, and the normal state-grounded cascade handles the model call.
+        An injectable client keeps this testable without live network or
+        model calls.
+
+        Args:
+            query: The question to ask the model.
+            search_queries: Search queries to execute.
+            system_prompt: Role / behaviour instructions for the agent.
+            state_manager: The project's :class:`StateManager`, used both
+                for context injection and for usage tracking.
+            max_search_results: Maximum results retained per search.
+            search_client: Optional ready-made client (used by tests).
+
+        Returns:
+            The model's response content as a string.
+
+        Raises:
+            TypeError: If ``state_manager`` is not a :class:`StateManager`.
+            ValueError: If the query, search queries, or system prompt are
+                empty, or no search client/key is available.
+        """
+        if not isinstance(state_manager, StateManager):
+            raise TypeError(
+                "state_manager must be a core.state_manager.StateManager "
+                f"instance, got {type(state_manager).__name__}."
+            )
+        cleaned_query = query.strip() if isinstance(query, str) else ""
+        cleaned_system = (
+            system_prompt.strip() if isinstance(system_prompt, str) else ""
+        )
+        cleaned_searches = [
+            q.strip() for q in (search_queries or []) if isinstance(q, str)
+        ]
+        cleaned_searches = [q for q in cleaned_searches if q]
+        if not cleaned_query:
+            raise ValueError("query must be a non-empty string.")
+        if not cleaned_system:
+            raise ValueError("system_prompt must be a non-empty string.")
+        if not cleaned_searches:
+            raise ValueError("search_queries must contain a non-empty query.")
+        client = search_client or SearchClient()
+        found = client.search_multiple(cleaned_searches, max_search_results)
+        context_parts: List[str] = []
+        for search_query in cleaned_searches:
+            context_parts.append(f"Search results for '{search_query}':")
+            results = found.get(search_query) or []
+            if not results:
+                context_parts.append("- No usable results returned.")
+                continue
+            for hit in results:
+                context_parts.append(
+                    f"- {hit.get('title', '')}: {hit.get('snippet', '')} "
+                    f"(URL: {hit.get('url', '')})"
+                )
+        enhanced_prompt = (
+            "Answer the question using the live search results below. "
+            "Prefer sourced facts over prior knowledge, and say when the "
+            "results do not contain an answer.\n\n"
+            + "\n".join(context_parts)
+            + f"\n\nQuestion: {cleaned_query}"
+        )
+        return self.ask_agent(
+            system_prompt=cleaned_system,
+            user_prompt=enhanced_prompt,
             state_manager=state_manager,
         )
 
