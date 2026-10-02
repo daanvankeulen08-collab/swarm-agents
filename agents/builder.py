@@ -67,6 +67,7 @@ __all__ = [
     "SECTION_WORKSPACE",
     "WORD_CAP_TOLERANCE",
     "WORD_HARD_CAP",
+    "GLOBAL_SECTION_REQUIREMENTS",
     "MIN_SECTION_LINES",
     "MIN_SECTION_CHARS",
     "MAX_AVG_CHARS_PER_LINE",
@@ -145,6 +146,41 @@ WORD_CAP_TOLERANCE: int = 50
 #: Absolute ceiling a section may reach before being truncated to
 #: :data:`MAX_WORDS_PER_SECTION`.
 WORD_HARD_CAP: int = MAX_WORDS_PER_SECTION + WORD_CAP_TOLERANCE
+
+#: Global section requirements appended to every generation prompt (prompt
+#: engineering only — no code, no validators). Encodes the Template 1
+#: lessons: metric units, no dangling headings, consistent assumptions,
+#: plausible example ranges, no filler, checkboxes for checklists.
+GLOBAL_SECTION_REQUIREMENTS: str = """\
+GLOBAL REQUIREMENTS (mandatory for every section):
+
+METRIC SYSTEM — use ONLY these units:
+- Temperature in degrees Celsius (°C). Never Fahrenheit.
+- Weight in kg or g. Never lbs or oz.
+- Volume in L or mL. Never cups or fluid oz.
+- Distance in m or cm.
+- Money in EUR (€). Never $, £, or other currencies.
+
+CONTENT GUIDELINES:
+1. NO DANGLING HEADINGS — every heading must have content beneath it.
+   Delete a heading rather than leave it empty.
+2. CONSISTENT ASSUMPTIONS — every section uses the same household size,
+   servings, and units. Never mix (e.g. 4 people in one section, 2 in
+   another).
+3. PLAUSIBLE EXAMPLE RANGES — example figures must be realistic:
+   weekly grocery budget €50–150 (never €700); cost per meal €5–15;
+   prep time 30–120 minutes.
+4. NO IRRELEVANT FILLER — every item must belong in its section.
+5. CHECKBOXES FOR CHECKLISTS — checklist items use `- [ ]`, never plain
+   bolded lines.
+
+TEMPLATE 1 FAILURES — never repeat these:
+- A `### Weekly Planning Checklist`-style heading with no content.
+- Sections assuming different household sizes.
+- A `$700/week`-style unrealistic budget.
+- Off-topic filler such as warranty text in a grocery list.
+- A checklist section with zero `- [ ]` checkboxes.
+"""
 
 #: Degeneracy floor for generated sections (15% of the word ceiling). A
 #: draft below this is a stub, not a section: it is vetoed before scoring
@@ -764,7 +800,8 @@ class BuilderAgent:
                 f"but CONCISE version of '{title}' in under 600 words for a "
                 f"{product_name} ({audience}). Every table must be fully "
                 "closed. End with a complete sentence. Output ONLY the "
-                "section content."
+                "section content.\n\n"
+                f"{GLOBAL_SECTION_REQUIREMENTS}"
             )
         else:
             user_prompt = (
@@ -773,7 +810,8 @@ class BuilderAgent:
                 "tables/checklists and realistic example rows. "
                 f"MAXIMUM {MAX_WORDS_PER_SECTION} WORDS. DO NOT EXCEED. "
                 "Complete and detailed — no truncation, no '...' "
-                "placeholders. Output ONLY the section content."
+                "placeholders. Output ONLY the section content.\n\n"
+                f"{GLOBAL_SECTION_REQUIREMENTS}"
             )
         return self._call_section_model(title, user_prompt)
 
@@ -909,7 +947,8 @@ class BuilderAgent:
             if iteration == 0:
                 prompt = (
                     f"Generate the '{section_name}' section based on these "
-                    f"requirements:\n{section_requirements}"
+                    f"requirements:\n{section_requirements}\n\n"
+                    f"{GLOBAL_SECTION_REQUIREMENTS}"
                 )
             else:
                 previous_feedback = (
@@ -923,6 +962,8 @@ Previous version had these issues:
 
 Requirements:
 {section_requirements}
+
+{GLOBAL_SECTION_REQUIREMENTS}
 
 IMPORTANT:
 - Address ALL feedback from the previous version
