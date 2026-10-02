@@ -44,6 +44,7 @@ from rich.table import Table
 
 from core.orchestrator import Orchestrator
 from core.state_manager import StateManager
+from research.web_search import WebSearch
 
 try:
     from tavily import TavilyClient
@@ -94,7 +95,10 @@ class SubNicheFinder:
     """
 
     def __init__(
-        self, orchestrator: Orchestrator, state_manager: StateManager
+        self,
+        orchestrator: Orchestrator,
+        state_manager: StateManager,
+        web_search: Optional[WebSearch] = None,
     ) -> None:
         # Duck-typed checks so test doubles work (swarm-wide convention).
         for name in ("ask_agent", "build_context_prompt", "get_model_info"):
@@ -117,6 +121,8 @@ class SubNicheFinder:
                 )
         self.orchestrator: Orchestrator = orchestrator
         self.state_manager: StateManager = state_manager
+        # Optional injected search engine (tests); built lazily otherwise.
+        self.web_search: Optional[WebSearch] = web_search
 
     def find_subniches(
         self, main_category: str = "weekly planner", max_competitors: int = 100
@@ -124,10 +130,11 @@ class SubNicheFinder:
         """Generate sub-niches, score competition + market, rank, save, display.
 
         Flow: generate 5 candidates → measure competition (Tavily or model
-        estimate) → estimate addressable market per sub-niche → drop
-        anything with ``viability_score < 5`` (market below
-        ``MIN_VIABLE_MARKET``) → re-rank survivors by weighted composite
-        (low competition 40% + large market 40% + specificity 20%).
+        estimate) → validate competition against live DuckDuckGo results
+        (Gumroad/Etsy/Reddit queries per sub-niche) → estimate addressable
+        market per sub-niche → drop anything with ``viability_score < 5``
+        (market below ``MIN_VIABLE_MARKET``) → re-rank survivors by weighted
+        composite (low competition 40% + large market 40% + specificity 20%).
 
         Args:
             main_category: Broad category to specialise, e.g.
@@ -140,9 +147,10 @@ class SubNicheFinder:
             Ranked list of viable sub-niche dicts (weighted best first),
             each with ``name``, ``target_audience``, ``specificity``
             (1–10), ``description``, ``estimated_competitors`` (int),
-            ``competition_level`` (low/medium/high), ``competition_source``
-            (``"tavily"`` or ``"model-estimate"``), ``market_size`` (int),
-            ``market_reasoning`` (str), ``viability_score`` (1–10),
+            ``competition_level`` (low/medium/high),             ``competition_source`` (``"tavily"``, ``"web-search"``, or
+            ``"model-estimate"``), ``search_validated`` (bool),
+            ``web_hits`` (int), ``web_sources`` (domains), ``market_size``
+            (int), ``market_reasoning`` (str), ``viability_score`` (1–10),
             ``composite_score`` (float), and ``rank``.
 
         Raises:
@@ -186,6 +194,8 @@ class SubNicheFinder:
             )
             self._measure_with_model(subniches)
 
+        validation = self._validate_with_web_search(subniches, use_tavily)
+
         _console.print("[cyan]Estimating addressable market per sub-niche…[/cyan]")
         for sub in subniches:
             sizing = self.estimate_market_size(sub)
@@ -208,7 +218,7 @@ class SubNicheFinder:
             )
 
         ranked = self._rank(viable)
-        self._save_results(cleaned, ranked, use_tavily)
+        self._save_results(cleaned, ranked, use_tavily, validation=validation)
         self._print_top3(ranked)
         return ranked
 
@@ -345,6 +355,80 @@ class SubNicheFinder:
         """Last-resort single-niche estimate used when Tavily errors mid-run."""
         return 50
 
+    # -- live web validation ------------------------------------------------------
+
+    def _validate_with_web_search(
+        self, subniches: List[Dict[str, Any]], use_tavily: bool
+    ) -> str:
+        """Validate competition counts against live DuckDuckGo results.
+
+        For each sub-niche, queries ``"<name> gumroad"``, ``"<name> etsy"``,
+        and ``"<name> reddit"`` (10 results each), dedupes URLs, and records
+        ``web_hits``, ``web_sources``, and ``search_validated``. When no
+        Tavily data exists, the real hit count replaces the model estimate
+        (``competition_source`` becomes ``"web-search"``); Tavily counts are
+        kept as the stronger signal and only corroborated. Never raises —
+        per-niche failures mark that niche unvalidated and continue.
+
+        Returns:
+            ``"web-search"`` if at least one sub-niche validated, else
+            ``"none"`` (or ``"unavailable"`` when the search library or all
+            queries fail).
+        """
+        try:
+            engine = self.web_search or WebSearch()
+        except Exception as exc:
+            _console.print(
+                f"[yellow]Web validation unavailable ({exc}); skipping.[/yellow]"
+            )
+            for sub in subniches:
+                sub["search_validated"] = False
+                sub["web_hits"] = 0
+                sub["web_sources"] = []
+            return "unavailable"
+        _console.print("[cyan]Validating competition with live web search…[/cyan]")
+        any_validated = False
+        for sub in subniches:
+            try:
+                hits: List[Dict[str, str]] = []
+                for query in (f"{sub['name']} gumroad",
+                              f"{sub['name']} etsy",
+                              f"{sub['name']} reddit"):
+                    hits.extend(engine.search(query, max_results=10))
+                seen, unique = set(), []
+                for hit in hits:
+                    if hit["url"] not in seen:
+                        seen.add(hit["url"])
+                        unique.append(hit)
+                from urllib.parse import urlparse as _urlparse
+
+                sub["web_hits"] = len(unique)
+                sub["web_sources"] = sorted(
+                    {_urlparse(h["url"]).netloc for h in unique if h["url"]}
+                )[:8]
+                if unique:
+                    sub["search_validated"] = True
+                    any_validated = True
+                    if not use_tavily:
+                        sub["estimated_competitors"] = len(unique)
+                        sub["competition_level"] = _web_level(len(unique))
+                        sub["competition_source"] = "web-search"
+                else:
+                    sub["search_validated"] = False
+            except Exception as exc:
+                _console.print(
+                    f"[yellow]Web validation failed for '{sub.get('name', '?')}': "
+                    f"{exc}[/yellow]"
+                )
+                sub["search_validated"] = False
+                sub["web_hits"] = 0
+                sub["web_sources"] = []
+        _console.print(
+            "[green]Web validation done "
+            f"({'live data' if any_validated else 'no live hits'}).[/green]"
+        )
+        return "web-search" if any_validated else "none"
+
     # -- market sizing ------------------------------------------------------------
 
     def estimate_market_size(self, subniche: Dict[str, Any]) -> Dict[str, Any]:
@@ -470,7 +554,11 @@ class SubNicheFinder:
         return ranked
 
     def _save_results(
-        self, main_category: str, ranked: List[Dict[str, Any]], used_tavily: bool
+        self,
+        main_category: str,
+        ranked: List[Dict[str, Any]],
+        used_tavily: bool,
+        validation: str = "none",
     ) -> None:
         """Persist results under state.research_findings['subniches']."""
         try:
@@ -485,6 +573,7 @@ class SubNicheFinder:
             findings["subniches"] = {
                 "main_category": main_category,
                 "competition_source": "tavily" if used_tavily else "model-estimate",
+                "validation": validation,
                 "ranking_method": "weighted composite: competition 40% + market 40% + specificity 20%",
                 "min_viable_market": MIN_VIABLE_MARKET,
                 "researched_at": _utcnow_iso(),
@@ -576,6 +665,15 @@ def _viability_from_size(size: int) -> int:
     if size >= 2_000:
         return 3
     return 1
+
+
+def _web_level(hits: int) -> str:
+    """Map a live web hit count to low/medium/high competition."""
+    if hits <= 5:
+        return "low"
+    if hits <= 15:
+        return "medium"
+    return "high"
 
 
 def _level_from_count(count: int, per_query: int) -> str:

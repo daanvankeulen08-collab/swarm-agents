@@ -57,7 +57,16 @@ __all__ = [
     "ALLOWED_REVIEW_STATUSES",
     "ProjectState",
     "StateManager",
+    "ZEN_CIRCUIT_BREAKER_TRIPS",
 ]
+
+#: Consecutive Zen stalls after which Zen is skipped for the rest of the
+#: run. Zen stalls in bursts and rarely recovers mid-run (MV015: ~10 stalls
+#: in 2 hours); each stall costs a full 60s wall-clock wait, so after this
+#: many consecutive stalls the provider cascade starts at OpenRouter instead.
+#: Lives here (not in ``core.orchestrator``) because the counter is part of
+#: the persisted project state and the orchestrator imports this module.
+ZEN_CIRCUIT_BREAKER_TRIPS: int = 3
 
 #: Valid lifecycle phases for a swarm project, in typical order.
 ALLOWED_PHASES: frozenset[str] = frozenset(
@@ -98,9 +107,13 @@ class ProjectState(BaseModel):
         api_calls_count: Cumulative count of billable API calls. Never negative.
         package_path: Filesystem path of the packaged ZIP, if one was built.
         packaged_at: ISO-8601 timestamp of the last packaging run, if any.
+        publish_status: Publish outcome: "published", "pending_human_review",
+            or None if undecided.
         build_history: Per-attempt records from BuilderAgent.build_with_testing.
         last_test_results: Most recent TestRunner report dict, if any.
         research_findings: Raw + ranked revenue-stream research from ResearchAgent.
+        improvement_prompt: Latest reviewer improvement prompt for revisions.
+        revision_count: How many builder revision attempts have run.
         created_at: Timestamp of state creation (auto-set, timezone-aware).
         updated_at: Timestamp of last mutation (auto-refreshed on save).
     """
@@ -137,6 +150,10 @@ class ProjectState(BaseModel):
     packaged_at: Optional[str] = Field(
         default=None, description="ISO-8601 timestamp of the last packaging run."
     )
+    publish_status: Optional[str] = Field(
+        default=None,
+        description='Publish outcome: "published", "pending_human_review", or None.',
+    )
     build_history: Optional[List[Dict[str, Any]]] = Field(
         default=None, description="Per-attempt build/test records from the Builder."
     )
@@ -145,6 +162,21 @@ class ProjectState(BaseModel):
     )
     research_findings: Optional[Dict[str, Any]] = Field(
         default=None, description="Revenue-stream research from the ResearchAgent."
+    )
+    improvement_prompt: str = Field(
+        default="", description="Latest reviewer improvement prompt for revisions."
+    )
+    zen_stall_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Consecutive Zen stalls this run. Reset to 0 on any Zen success; "
+            f"at {ZEN_CIRCUIT_BREAKER_TRIPS} the orchestrator skips Zen for "
+            "the rest of the run."
+        ),
+    )
+    revision_count: int = Field(
+        default=0, ge=0, description="How many builder revision attempts have run."
     )
     created_at: datetime = Field(
         default_factory=_utcnow, description="Creation timestamp (auto-set)."
@@ -365,6 +397,137 @@ class StateManager:
                 f"{current.api_calls_count}. Saved.[/blue]"
             )
             return current.api_calls_count
+
+    def log_section_quality(
+        self, section_name: str, score: float, iterations_used: int
+    ) -> None:
+        """Record one iterative section-build quality entry and persist.
+
+        Appends ``{"stage": "section-quality", "section": ..., "score": ...,
+        "iterations": ..., "at": ...}`` to ``build_history`` so per-section
+        refinement is traceable in state. Never raises for bad input —
+        invalid arguments are ignored with a warning instead of crashing
+        a running build.
+        """
+        try:
+            name = str(section_name).strip()
+            points = max(0.0, min(10.0, float(score)))
+            rounds = max(0, int(iterations_used))
+        except (TypeError, ValueError) as exc:
+            _console.print(
+                f"[yellow]Ignoring invalid section-quality entry: {exc}[/yellow]"
+            )
+            return
+        if not name:
+            _console.print("[yellow]Ignoring section-quality entry: no name.[/yellow]")
+            return
+        with self._lock:
+            current = self._load_locked()
+            history = list(current.build_history or [])
+            history.append({
+                "stage": "section-quality",
+                "section": name,
+                "score": round(points, 2),
+                "iterations": rounds,
+                "at": _utcnow().isoformat(),
+            })
+            current.build_history = history
+            current.updated_at = _utcnow()
+            self._write_atomically(current)
+            _console.print(
+                f"[blue]Section quality logged: '{name}' "
+                f"{points:g}/10 ({rounds} iterations).[/blue]"
+            )
+
+    def log_fact_check(self, fact_result: Dict[str, Any]) -> None:
+        """Record one fact-check result in ``build_history``.
+
+        Args:
+            fact_result: JSON-serialisable summary produced by
+                :class:`agents.fact_checker.FactCheckerAgent`.
+
+        Raises:
+            ValueError: If ``fact_result`` is not a mapping.
+        """
+        if not isinstance(fact_result, dict):
+            raise ValueError(
+                "fact_result must be a mapping, "
+                f"got {type(fact_result).__name__}."
+            )
+        entry = dict(fact_result)
+        entry["stage"] = "fact-check"
+        entry["at"] = _utcnow().isoformat()
+        with self._lock:
+            current = self._load_locked()
+            history = list(current.build_history or [])
+            history.append(entry)
+            current.build_history = history
+            current.updated_at = _utcnow()
+            self._write_atomically(current)
+            _console.print(
+                "[blue]Fact check logged for project "
+                f"'{self.project_id}'.[/blue]"
+            )
+
+    def log_kcal_validation(self, kcal_result: Dict[str, Any]) -> None:
+        """Record one USDA kcal-validation result in ``build_history``.
+
+        Args:
+            kcal_result: JSON-serialisable summary produced by
+                :class:`agents.kcal_checker.KcalChecker`.
+
+        Raises:
+            ValueError: If ``kcal_result`` is not a mapping.
+        """
+        if not isinstance(kcal_result, dict):
+            raise ValueError(
+                "kcal_result must be a mapping, "
+                f"got {type(kcal_result).__name__}."
+            )
+        entry = dict(kcal_result)
+        entry["stage"] = "kcal-validation"
+        entry["at"] = _utcnow().isoformat()
+        with self._lock:
+            current = self._load_locked()
+            history = list(current.build_history or [])
+            history.append(entry)
+            current.build_history = history
+            current.updated_at = _utcnow()
+            self._write_atomically(current)
+            _console.print(
+                "[blue]Kcal validation logged for project "
+                f"'{self.project_id}'.[/blue]"
+            )
+
+    def log_grammar_check(self, grammar_result: Dict[str, Any]) -> None:
+        """Record one grammar-consensus result in ``build_history``.
+
+        Args:
+            grammar_result: JSON-serialisable summary produced by
+                :class:`agents.grammar_agent.GrammarAgent`.
+
+        Raises:
+            ValueError: If ``grammar_result`` is not a mapping.
+        """
+        if not isinstance(grammar_result, dict):
+            raise ValueError(
+                "grammar_result must be a mapping, "
+                f"got {type(grammar_result).__name__}."
+            )
+        entry = dict(grammar_result)
+        entry["stage"] = "grammar-check"
+        entry["at"] = _utcnow().isoformat()
+        with self._lock:
+            current = self._load_locked()
+            history = list(current.build_history or [])
+            history.append(entry)
+            current.build_history = history
+            current.updated_at = _utcnow()
+            self._write_atomically(current)
+            _console.print(
+                f"[blue]Grammar check logged for project "
+                f"'{self.project_id}'.[/blue]"
+            )
 
     def get_state(self) -> ProjectState:
         """Convenience method to load and return the current state.

@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 
+from .placeholders import detect_abandoned_content, detect_ungrounded_claims
 from .state_manager import StateManager
 
 __all__ = [
@@ -54,15 +55,17 @@ __all__ = [
 TEST_TIMEOUT_SECONDS: int = 30
 
 #: Case-insensitive markers that indicate unfilled template content.
+#:
+#: ``tbd`` was removed deliberately: in a planner template an empty field
+#: *is* the product, and a blanket substring match rejected a valid
+#: 28,702-char product during Maiden Voyage 3. Abandoned content is now
+#: detected structurally by :func:`core.placeholders.detect_abandoned_content`.
 PLACEHOLDER_MARKERS: tuple = (
     "todo",
     "fixme",
     "xxx",
-    "lorem ipsum",
     "[insert",
     "<insert",
-    "tbd",
-    "coming soon",
 )
 
 #: Probe script written next to the product; imports it, exercises public
@@ -126,18 +129,56 @@ class TestRunner:
         ```
     """
 
-    def __init__(self, state_manager: StateManager) -> None:
-        # Duck-typed validation so test doubles/mocks work too.
-        for name in ("update_phase", "get_state", "save", "log_api_call"):
-            if not hasattr(state_manager, name) or not callable(
-                getattr(state_manager, name, None)
-            ):
-                raise TypeError(
-                    "state_manager must expose the StateManager interface "
-                    f"(missing callable {name!r}); "
-                    f"got {type(state_manager).__name__}."
-                )
-        self.state_manager: StateManager = state_manager
+    def __init__(self, state_manager: Optional[StateManager] = None) -> None:
+        # Duck-typed validation so test doubles/mocks work too. Optional so
+        # content-level checks (e.g. _detect_abandoned_content) can be used
+        # standalone without a project state file.
+        if state_manager is not None:
+            for name in ("update_phase", "get_state", "save", "log_api_call"):
+                if not hasattr(state_manager, name) or not callable(
+                    getattr(state_manager, name, None)
+                ):
+                    raise TypeError(
+                        "state_manager must expose the StateManager interface "
+                        f"(missing callable {name!r}); "
+                        f"got {type(state_manager).__name__}."
+                    )
+        self.state_manager: Optional[StateManager] = state_manager
+
+    def _detect_abandoned_content(self, content: str) -> List[str]:
+        """Detect content the generator abandoned rather than left fillable.
+
+        A planner template legitimately ships empty fields
+        (``| Client Name | TBD |``). What must not ship is a section that
+        simply stops at ``TBD``. This delegates to
+        :func:`core.placeholders.detect_abandoned_content` so the test gate
+        and the reviewer cannot disagree.
+
+        Args:
+            content: Generated template or section text.
+
+        Returns:
+            List of defect descriptions; empty means clean.
+        """
+        return detect_abandoned_content(content)
+
+    def _detect_ungrounded_claims(self, content: str) -> List[str]:
+        """Detect content that contradicts itself or the supplied input.
+
+        Separate from abandonment: a section can be fully formatted and still
+        be unusable because it announces it received nothing, denies its own
+        existence, or presents totals computed from inputs it declares
+        absent. Delegates to
+        :func:`core.placeholders.detect_ungrounded_claims` so the test gate
+        and the reviewer cannot disagree.
+
+        Args:
+            content: Generated template or section text.
+
+        Returns:
+            List of defect descriptions; empty means clean.
+        """
+        return detect_ungrounded_claims(content)
 
     def run_tests(
         self, product_code: str, product_type: str = "python"
@@ -354,6 +395,10 @@ class TestRunner:
             marker for marker in PLACEHOLDER_MARKERS
             if marker in text.lower()
         })
+        # Structural check replaces the old blanket 'tbd' scan: fillable
+        # fields are the product, abandoned content is a defect.
+        abandoned = self._detect_abandoned_content(text)
+        ungrounded = self._detect_ungrounded_claims(text)
         long_enough = len(text) >= 100
         test_results = {
             "length": {"passed": long_enough, "characters": len(text)},
@@ -361,6 +406,8 @@ class TestRunner:
             "has_sections": {"passed": has_sections},
             "has_examples": {"passed": has_examples},
             "leftover_placeholders": leftover,
+            "abandoned_content": abandoned,
+            "ungrounded_claims": ungrounded,
         }
         _console.print("[cyan]  • checking template structure…[/cyan]")
         if not long_enough:
@@ -375,11 +422,23 @@ class TestRunner:
             errors.append(
                 "Unfilled placeholder text remains: " + ", ".join(leftover) + "."
             )
+        if abandoned:
+            errors.append(
+                f"Abandoned content detected ({len(abandoned)} defect(s)): "
+                + " | ".join(abandoned[:5])
+            )
+        if ungrounded:
+            errors.append(
+                f"Ungrounded content detected ({len(ungrounded)} defect(s)): "
+                + " | ".join(ungrounded[:5])
+            )
         summary = (
             f"Template check: {len(text)} chars, "
             f"headings={'yes' if has_heading else 'no'}, "
             f"examples={'yes' if has_examples else 'no'}, "
-            f"leftover={leftover or 'none'}."
+            f"leftover={leftover or 'none'}, "
+            f"abandoned={len(abandoned)}, "
+            f"ungrounded={len(ungrounded)}."
         )
         return _report(
             success=not errors,
@@ -392,6 +451,8 @@ class TestRunner:
 
     def _finalise(self, report: Dict[str, Any]) -> Dict[str, Any]:
         """Persist the report to state (best effort) and return it."""
+        if self.state_manager is None:
+            return report
         try:
             state = self.state_manager.get_state()
             state.last_test_results = {

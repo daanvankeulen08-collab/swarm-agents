@@ -64,6 +64,20 @@ SCOUT_SYSTEM_PROMPT: str = (
 _console = Console()
 
 
+def _deep_enabled() -> bool:
+    """Read the ``ENABLE_DEEP_RESEARCH`` flag from build_pipeline lazily.
+
+    Imported inside the function to avoid any import cycle; any failure
+    (missing module, missing flag) safely defaults to False.
+    """
+    try:
+        from build_pipeline import ENABLE_DEEP_RESEARCH
+
+        return bool(ENABLE_DEEP_RESEARCH)
+    except Exception:
+        return False
+
+
 class ScoutAgent:
     """Research market opportunities for digital products in a given niche.
 
@@ -114,6 +128,7 @@ class ScoutAgent:
         self,
         niche: str,
         target_price_range: tuple = (5, 20),
+        deep: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Research product opportunities in ``niche`` via Space Bunny Alpha.
 
@@ -122,6 +137,11 @@ class ScoutAgent:
                 ``"Python automation scripts"``. Must be a non-empty string.
             target_price_range: ``(min_price, max_price)`` tuple constraining
                 ``estimated_price``. Defaults to ``(5, 20)``.
+            deep: When True, run 3 angled research queries (base demand,
+                competitor pricing, audience gaps) instead of 1, merge and
+                dedupe opportunities, and attach ``competitor_analysis``.
+                When None, uses the ``ENABLE_DEEP_RESEARCH`` flag from
+                ``build_pipeline`` (defaults False).
 
         Returns:
             Findings dict persisted to state, with structure::
@@ -147,53 +167,89 @@ class ScoutAgent:
             raise ValueError("niche must be a non-empty string.")
         low, high = self._parse_price_range(target_price_range)
         self._target_price_range = (low, high)
+        deep_mode = bool(deep) if deep is not None else _deep_enabled()
 
-        user_prompt = self._build_user_prompt(cleaned_niche, low, high)
+        base_prompt = self._build_user_prompt(cleaned_niche, low, high)
+        if deep_mode:
+            query_angles = [
+                ("base demand", base_prompt),
+                (
+                    "competitor pricing",
+                    base_prompt
+                    + "\nAngle for this pass: focus especially on competitor "
+                    "pricing — typical price points and what best sellers charge.",
+                ),
+                (
+                    "audience gaps",
+                    base_prompt
+                    + "\nAngle for this pass: focus especially on the target "
+                    "audience — who buys, which features they praise, and "
+                    "which gaps they complain about.",
+                ),
+            ]
+        else:
+            query_angles = [("base demand", base_prompt)]
 
         _console.print(
             f"[cyan]Scout researching niche[/cyan] "
             f"[bold]{cleaned_niche}[/bold] (price €{low:g}–€{high:g})…"
+            + (" [deep: 3 angled queries]" if deep_mode else "")
         )
-        try:
-            raw_response: str = self.orchestrator.ask_agent(
-                system_prompt=SCOUT_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                state_manager=self.state_manager,
-            )
-        except RuntimeError as exc:
-            raise RuntimeError(
-                f"Scout API call failed for niche {cleaned_niche!r}: {exc}"
-            ) from exc
-        except Exception as exc:
-            raise RuntimeError(
-                f"Scout API call failed for niche {cleaned_niche!r}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-
-        candidates = self._parse_response(raw_response)
-
         validated: List[Dict[str, Any]] = []
-        for candidate in candidates:
-            if isinstance(candidate, dict) and self.validate_opportunity(candidate):
-                validated.append(candidate)
-            else:
-                name = (
-                    candidate.get("product_name", "(unnamed)")
-                    if isinstance(candidate, dict)
-                    else repr(candidate)
+        seen_names = set()
+        query_errors: List[str] = []
+        for label, user_prompt in query_angles:
+            try:
+                raw_response: str = self.orchestrator.ask_agent(
+                    system_prompt=SCOUT_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    state_manager=self.state_manager,
                 )
+            except Exception as exc:
+                query_errors.append(f"{label}: {exc}")
                 _console.print(
-                    f"[yellow]Discarded invalid opportunity {name!r}: "
-                    "missing fields, over-long name, or price out of range."
-                    "[/yellow]"
+                    f"[yellow]Scout query '{label}' failed for niche "
+                    f"{cleaned_niche!r}: {exc}[/yellow]"
                 )
+                continue
+            try:
+                candidates = self._parse_response(raw_response)
+            except ValueError as exc:
+                query_errors.append(f"{label} parse: {exc}")
+                _console.print(
+                    f"[yellow]Scout query '{label}' unparseable: {exc}[/yellow]"
+                )
+                continue
+            for candidate in candidates:
+                if isinstance(candidate, dict) and self.validate_opportunity(candidate):
+                    name_key = str(candidate["product_name"]).strip().lower()
+                    if name_key in seen_names:
+                        _console.print(
+                            f"[yellow]Duplicate opportunity {candidate['product_name']!r} "
+                            f"from '{label}' pass; keeping first.[/yellow]"
+                        )
+                        continue
+                    seen_names.add(name_key)
+                    validated.append(candidate)
+                else:
+                    name = (
+                        candidate.get("product_name", "(unnamed)")
+                        if isinstance(candidate, dict)
+                        else repr(candidate)
+                    )
+                    _console.print(
+                        f"[yellow]Discarded invalid opportunity {name!r}: "
+                        "missing fields, over-long name, or price out of range."
+                        "[/yellow]"
+                    )
 
         if not validated:
             raise ValueError(
-                f"No valid opportunities found for niche {cleaned_niche!r}: "
-                f"{len(candidates)} candidate(s) returned, 0 passed validation "
-                f"(required fields: {list(REQUIRED_OPPORTUNITY_FIELDS)}; "
-                f"price must be within €{low:g}–€{high:g})."
+                f"No valid opportunities found for niche {cleaned_niche!r} "
+                f"across {len(query_angles)} quer"
+                f"{'y' if len(query_angles) == 1 else 'ies'}; "
+                f"query errors: {query_errors or 'none (candidates failed validation)'}; "
+                f"price must be within €{low:g}–€{high:g}."
             )
 
         for opportunity in validated:
@@ -209,6 +265,10 @@ class ScoutAgent:
             "opportunities": validated,
             "researched_at": datetime.now(timezone.utc).isoformat(),
         }
+        if deep_mode:
+            findings["deep_research"] = True
+            findings["query_angles"] = [label for label, _ in query_angles]
+            findings["competitor_analysis"] = self._competitor_analysis(validated)
 
         try:
             self.state_manager.update_phase("research")
@@ -228,6 +288,38 @@ class ScoutAgent:
             f"for niche '{cleaned_niche}'.[/green]"
         )
         return findings
+
+    @staticmethod
+    def _competitor_analysis(
+        opportunities: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Summarise competitor pricing and audiences (deep mode only).
+
+        Extracts min/max/avg estimated prices plus the most common target
+        audiences across validated opportunities. Never raises for
+        well-formed input.
+        """
+        prices = [
+            float(o["estimated_price"])
+            for o in opportunities
+            if isinstance(o, dict)
+            and isinstance(o.get("estimated_price"), (int, float))
+            and not isinstance(o.get("estimated_price"), bool)
+        ]
+        tally: Dict[str, int] = {}
+        for item in opportunities:
+            if not isinstance(item, dict):
+                continue
+            audience = str(item.get("target_audience", "")).strip()
+            if audience:
+                tally[audience] = tally.get(audience, 0) + 1
+        return {
+            "opportunity_count": len(opportunities),
+            "min_price": min(prices) if prices else None,
+            "max_price": max(prices) if prices else None,
+            "avg_price": round(sum(prices) / len(prices), 2) if prices else None,
+            "top_audiences": sorted(tally, key=lambda k: (-tally[k], k))[:5],
+        }
 
     def validate_opportunity(self, opportunity: Dict[str, Any]) -> bool:
         """Check whether an opportunity dict is complete and in range.

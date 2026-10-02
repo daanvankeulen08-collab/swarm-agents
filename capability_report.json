@@ -1,0 +1,153 @@
+{
+  "runs_analyzed": 13,
+  "runs_with_section_scores": 6,
+  "strong_content_types": [],
+  "weak_content_types": [],
+  "reliable_sections": [
+    "protocol"
+  ],
+  "problematic_sections": [
+    "certification_deadlines",
+    "client_database",
+    "medical_terminology"
+  ],
+  "average_quality_score": 6.92,
+  "per_section_average": {
+    "appointment_grid": 7.29,
+    "client_database": 6.57,
+    "medical_terminology": 5.86,
+    "invoice_tracking": 7.43,
+    "certification_deadlines": 6.86,
+    "protocol": 7.5
+  },
+  "per_section_n": {
+    "appointment_grid": 7,
+    "client_database": 7,
+    "medical_terminology": 7,
+    "invoice_tracking": 7,
+    "certification_deadlines": 7,
+    "protocol": 7
+  },
+  "degradation_events": {
+    "appointment_grid": 2,
+    "client_database": 3,
+    "medical_terminology": 3,
+    "invoice_tracking": 1,
+    "certification_deadlines": 2,
+    "protocol": 1
+  },
+  "final_scores": {
+    "maiden_voyage_001": 3.5,
+    "maiden_voyage_011": 4.0,
+    "maiden_voyage_012": 8.0,
+    "maiden_voyage_013": 8.0
+  },
+  "error_hotspots": [
+    "provider stalls/timeouts (11 events) \u2014 the 60s guards fire, cascade recovers",
+    "truncation flagged by reviewer (pre-assembly era)",
+    "connection resets (1 events)",
+    "degraded-section markers cluster on: client_database (3x), medical_terminology (3x)",
+    "newline collapse: 7 section file(s) pack table-dense content onto <12 lines (ge_011:appointment_, ge_011:medical_term, ge_011:certificatio, ge_012:invoice_trac) \u2014 renderers show paragraphs, not tables"
+  ],
+  "error_categories": {
+    "truncation flagged by reviewer": 2,
+    "timeout/stall": 11,
+    "other provider error": 1,
+    "connection error": 1
+  },
+  "phase_failures": {
+    "review": 20,
+    "visual": 4,
+    "scores": 4,
+    "_terminal: failed": 8,
+    "build": 3,
+    "publish": 4,
+    "test": 1
+  },
+  "provider_failures": {
+    "opencode-zen": 12,
+    "openrouter": 1
+  },
+  "content_type_averages": {
+    "tables": {
+      "n": 29,
+      "avg": 6.97
+    },
+    "mixed": {
+      "n": 1,
+      "avg": 7.0
+    }
+  },
+  "efficiency": {
+    "maiden_voyage_001": {
+      "api_calls": 54,
+      "seconds": 2235,
+      "phase": "failed"
+    },
+    "maiden_voyage_011": {
+      "api_calls": 61,
+      "seconds": 3666,
+      "phase": "failed"
+    },
+    "maiden_voyage_012": {
+      "api_calls": 12,
+      "seconds": 670,
+      "phase": "failed"
+    },
+    "maiden_voyage_013": {
+      "api_calls": 43,
+      "seconds": 5721,
+      "phase": "publishing"
+    },
+    "medical_interpreter_planner_001": {
+      "api_calls": 13,
+      "seconds": 58750,
+      "phase": "reviewing"
+    },
+    "medical_interpreter_planner_004": {
+      "api_calls": 11,
+      "seconds": 3499,
+      "phase": "reviewing"
+    },
+    "medical_interpreter_planner_006": {
+      "api_calls": 4,
+      "seconds": 966,
+      "phase": "failed"
+    },
+    "medical_interpreter_planner_007": {
+      "api_calls": 7,
+      "seconds": 3123,
+      "phase": "failed"
+    },
+    "medical_interpreter_planner_008": {
+      "api_calls": 16,
+      "seconds": 3610,
+      "phase": "failed"
+    },
+    "medical_interpreter_planner_009": {
+      "api_calls": 61,
+      "seconds": 4371,
+      "phase": "failed"
+    },
+    "medical_interpreter_planner_010": {
+      "api_calls": 58,
+      "seconds": 2196,
+      "phase": "failed"
+    },
+    "research_001": {
+      "api_calls": 13,
+      "seconds": 849,
+      "phase": "research_complete"
+    },
+    "subniche_run": {
+      "api_calls": 14,
+      "seconds": 5783,
+      "phase": "research"
+    }
+  },
+  "provider_reliability": {
+    "opencode-zen": "fast primary; stalls observed (~9 in MV011); free-tier models 403 outside OpenCode",
+    "openrouter": "stable fallback; empty-response retries seen; never stalled in observed runs",
+    "nvidia-nim": "reliable for judging (review/vision); cascade fallback can stall under load (60s guard fires)"
+  }
+}

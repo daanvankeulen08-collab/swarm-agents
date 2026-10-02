@@ -1,0 +1,87 @@
+{
+  "test": "blog_outline_generator",
+  "product_name": "Blog Post Outline Generator",
+  "niche": "blog_outline_generator",
+  "focus": "long explanatory narrative + examples",
+  "expected": "Medium score (narrative is harder to validate)",
+  "started_at": "2026-10-01T13:51:05.278475+00:00",
+  "errors": [],
+  "stages": {
+    "build": {
+      "ok": true,
+      "chars": 17560,
+      "sections_written": 4
+    },
+    "tests": {
+      "ok": true,
+      "success": true,
+      "errors": []
+    },
+    "review": {
+      "ok": true,
+      "verdict": "approved",
+      "quality_score": 8,
+      "model_score": 7.5,
+      "checks": {
+        "has_readme": true,
+        "has_template_content": true,
+        "all_sections_present": true,
+        "no_placeholder_text": true,
+        "no_abandoned_content": true,
+        "reasonable_size": true
+      }
+    },
+    "visual": {
+      "ok": true,
+      "visual_score": 10.0,
+      "verdict": "PASS",
+      "reason": "Render is clean"
+    },
+    "customer": {
+      "ok": true,
+      "verdict": "NEEDS IMPROVEMENT",
+      "overall": 7,
+      "scores": {
+        "first_impression": 8,
+        "clarity": 7,
+        "completeness": 6,
+        "value_for_money": 6,
+        "usability": 7,
+        "overall": 7
+      },
+      "model_used": "primary (opencode-zen)",
+      "price": 15.0,
+      "feedback": "The material looks professional and gives me a usable starting point for planning a blog post. The selection guide, reusable framework, and worked examples are practical and easy to follow. However, it is a template and prompt collection rather than a generator that visibly turns an input into an outline, and several headings appear unfinished, including the outline checklist and later drafting sections. At \u20ac15, I would want clearer labeling and those gaps filled before buying."
+    }
+  },
+  "section_self_scores": [
+    {
+      "section": "Outline Templates",
+      "score": 8.8,
+      "iterations": 1
+    },
+    {
+      "section": "Writing Prompts",
+      "score": 8.0,
+      "iterations": 1
+    },
+    {
+      "section": "SEO Checklist",
+      "score": 7.0,
+      "iterations": 1
+    },
+    {
+      "section": "Examples",
+      "score": 7.5,
+      "iterations": 1
+    }
+  ],
+  "finished_at": "2026-10-01T13:57:41.883753+00:00",
+  "seconds": 396.6,
+  "api_calls": 9,
+  "avg_section_score": 7.83,
+  "sections_passed": 4,
+  "sections_total": 4,
+  "final_verdict": "approved",
+  "customer_verdict": "NEEDS IMPROVEMENT"
+}
