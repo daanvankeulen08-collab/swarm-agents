@@ -1626,7 +1626,17 @@ def _pipeline(outcome: Dict[str, str]) -> int:
         # BUY or NEEDS IMPROVEMENT (minor issues) proceed to publish_ready;
         # PASS is marked as rejected with the customer feedback attached.
         try:
-            customer_result = customer_review_step(customer_reviewer, code)
+            if FEATURE_FLAGS["customer_review"]:
+                customer_result = customer_review_step(customer_reviewer, code)
+            else:
+                customer_result = skipped_customer_result(
+                    "Customer review skipped "
+                    "(FEATURE_FLAGS['customer_review'] is False); "
+                    "buy/no-buy gate not enforced."
+                )
+                log("customer-gate",
+                    "Skipped (FEATURE_FLAGS['customer_review'] is False).",
+                    True)
         except (RuntimeError, ValueError) as exc:
             return fail(state_manager, f"Customer review failed: {exc}")
         _build_log.append({
@@ -1707,7 +1717,7 @@ def _pipeline(outcome: Dict[str, str]) -> int:
             "final_quality_score", 0.0)
         gate_passed = should_auto_publish(customer_result)
         publish_status_value: Optional[str] = None
-        if gate_passed and AUTO_PUBLISH:
+        if gate_passed and AUTO_PUBLISH and FEATURE_FLAGS["auto_publish"]:
             publish_outcome = publisher.publish_product(payhip_data)
             if publish_outcome.get("published"):
                 publish_status_value = "published"
@@ -1728,7 +1738,10 @@ def _pipeline(outcome: Dict[str, str]) -> int:
         else:
             publish_status_value = "pending_human_review"
             reason = (
-                "quality gates not met"
+                "auto_publish feature flag off"
+                if gate_passed and AUTO_PUBLISH
+                and not FEATURE_FLAGS["auto_publish"]
+                else "quality gates not met"
                 if not gate_passed
                 else "--publish flag not set"
             )

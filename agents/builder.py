@@ -781,29 +781,92 @@ class BuilderAgent:
         """Return stored refinement feedback for a section (or empty)."""
         return self._section_feedback.get(section_name, "")
 
-    @staticmethod
-    def _degeneracy_veto(content: str, section_name: str) -> Optional[str]:
-        """Return a veto reason when a draft is a stub, else None.
+    #: Abandonment markers that mean the generator stopped rather than
+    #: finished. Substring match on lower-cased text. Kept separate from
+    #: :data:`core.placeholders.ABANDONMENT_MARKERS` because these describe a
+    #: section that was never written, not a placeholder left in one.
+    DEGENERACY_MARKERS: tuple = (
+        "awaiting research",
+        "no items identified",
+        "pending review",
+        "to be determined",
+        "placeholder",
+        "not yet available",
+        "will be added",
+        "coming soon",
+        "tbd",
+        "to be added",
+        "will update",
+    )
 
-        A draft is degenerate when it holds fewer than
-        :data:`MIN_SECTION_WORDS` words or when
-        :func:`core.placeholders.detect_abandoned_content` flags it.
-        Vetoed drafts score 0.0 implicitly (they never reach the scorer)
-        and therefore can never be selected as the best version.
+    @classmethod
+    def _is_degenerate(cls, content: str) -> bool:
+        """Reject stubs and abandoned content before scoring.
+
+        Two independent failure modes, both of which the model scorer rewards
+        by mistake:
+
+        * **Too short.** Below 15% of :data:`MAX_WORDS_PER_SECTION` (120 words)
+          the draft is a stub. Maiden Voyage 015 shipped a 40-word section
+          that self-scored 8.0/10, because the scorer rewards short, clean
+          text over long, flawed text.
+        * **Abandoned.** The generator gave up mid-section, leaving a
+          research-pending note or a placeholder instead of content.
+
+        A degenerate draft must never reach the scorer: it would win on the
+        scorer's own bias and then ship. The caller skips it, scores it 0.0,
+        and regenerates.
+
+        Args:
+            content: The draft section text.
+
+        Returns:
+            True when the draft is too short or carries an abandonment
+            marker, False when it is a plausible section.
         """
-        words = len((content or "").split())
-        if words < MIN_SECTION_WORDS:
+        text = content or ""
+        # Under 15% of MAX_WORDS_PER_SECTION is degenerate.
+        min_words = int(MAX_WORDS_PER_SECTION * 0.15)
+        if len(text.split()) < min_words:
+            return True
+        content_lower = text.lower()
+        if any(marker in content_lower for marker in cls.DEGENERACY_MARKERS):
+            return True
+        # Shared detector, kept so this check does not regress the lorem
+        # ipsum / [insert / hollow-TBD coverage the Reviewer relies on.
+        return bool(detect_abandoned_content(text))
+
+    @classmethod
+    def _degeneracy_veto(cls, content: str, section_name: str) -> Optional[str]:
+        """Return a human-readable veto reason, or None when the draft is fine.
+
+        Reporting wrapper around :meth:`_is_degenerate`, which stays the
+        single source of truth for the decision so the two can never disagree.
+        This adds only the context (section name, word count, which marker
+        fired) needed by the build log and the regenerate prompt.
+        """
+        if not cls._is_degenerate(content):
+            return None
+        text = content or ""
+        words = len(text.split())
+        min_words = int(MAX_WORDS_PER_SECTION * 0.15)
+        if words < min_words:
             return (
                 f"section '{section_name}' is a {words}-word stub "
-                f"(minimum {MIN_SECTION_WORDS} words)"
+                f"(minimum {min_words} words)"
             )
-        abandoned = detect_abandoned_content(content or "")
-        if abandoned:
-            return (
-                f"section '{section_name}' contains abandoned content: "
-                f"{abandoned[0][:120]}"
-            )
-        return None
+        content_lower = text.lower()
+        for marker in cls.DEGENERACY_MARKERS:
+            if marker in content_lower:
+                return (
+                    f"section '{section_name}' contains abandonment marker "
+                    f"{marker!r} — the generator stopped early"
+                )
+        abandoned = detect_abandoned_content(text)
+        return (
+            f"section '{section_name}' contains abandoned content: "
+            f"{abandoned[0][:120]}"
+        )
 
     def _iterative_section_build(
         self,
@@ -828,12 +891,14 @@ class BuilderAgent:
             target_quality: Score (0–10) that stops iteration early.
 
         Returns:
-            Dict with ``content`` (best version, may be None if every
-            attempt came back empty), ``final_score``, ``iterations_used``,
-            and ``quality_history`` (per-iteration score + word count).
+            Dict with ``content`` (best version), ``final_score``,
+            ``iterations_used``, and ``quality_history`` (per-iteration score
+            + word count).
 
         Raises:
             RuntimeError: If an API call fails.
+            ValueError: If every iteration came back degenerate, so no
+                usable content exists to return.
         """
         best_content = None
         best_score = 0.0
@@ -879,10 +944,14 @@ IMPORTANT:
             # Step 2b: Degeneracy veto — a stub must never reach scoring.
             # The model scorer rewards short, clean text, so without this a
             # 40-word stub can outscore a 1,000-word draft (MV015 proved it).
-            veto_reason = self._degeneracy_veto(content, section_name)
-            if veto_reason is not None:
+            # _is_degenerate is the single source of truth for the decision;
+            # _degeneracy_veto only adds context for the log and the
+            # regenerate prompt.
+            if self._is_degenerate(content):
+                veto_reason = self._degeneracy_veto(content, section_name)
                 _console.print(
-                    f"[yellow]  '{section_name}' iteration {iteration + 1}: "
+                    f"[yellow]  '{section_name}' iteration {iteration + 1} "
+                    f"is degenerate ({len(content.split())} words). "
                     f"VETOED ({veto_reason}); regenerating.[/yellow]"
                 )
                 quality_history.append({
@@ -922,6 +991,18 @@ IMPORTANT:
                 content, section_name, score
             )
             self._section_feedback[section_name] = improvement_context
+
+        # If every iteration came back degenerate, there is nothing shippable.
+        # Failing loudly beats returning a stub: the caller
+        # (_build_section_by_section) catches ValueError per section, so this
+        # marks one section failed and still builds the rest.
+        if best_content is None:
+            raise ValueError(
+                f"All {len(quality_history)} iteration(s) for section "
+                f"'{section_name}' were degenerate "
+                f"(<{int(MAX_WORDS_PER_SECTION * 0.15)} words or carrying an "
+                "abandonment marker); no usable content produced"
+            )
 
         return {
             "content": best_content,
