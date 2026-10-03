@@ -331,6 +331,11 @@ MIN_SECTION_QUALITY = 7.0           # Minimum quality score to accept a section
 #: MIN_OVERALL_SCORE; the Reviewer and Customer Reviewer remain the stricter
 #: gates, so the builder must not be the harshest judge in the swarm.
 TARGET_SECTION_QUALITY = 7.0
+#: Configurable household size (default: 4 people). Injected into every
+#: section prompt so all sections share one household basis — prompt advice
+#: alone could not hold this consistent across independent generation
+#: calls (Templates 1–3 all split 2-vs-4 in the calendar section).
+HOUSEHOLD_SIZE = 4
 ENABLE_DEEP_RESEARCH = True         # More thorough research phase
 ENABLE_CROSS_VALIDATION = True      # Multiple reviewer checks
 

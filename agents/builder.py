@@ -180,6 +180,17 @@ TEMPLATE 1 FAILURES — never repeat these:
 - A `$700/week`-style unrealistic budget.
 - Off-topic filler such as warranty text in a grocery list.
 - A checklist section with zero `- [ ]` checkboxes.
+
+HOUSEHOLD CONSISTENCY (mandatory — learned from Template 2):
+- Every section MUST assume the SAME household. Pick one household size
+  (e.g. 2, 4, or 6 people) and use it CONSISTENTLY in ALL sections.
+- Template 2 failed here: its Weekly Meal Calendar assumed two adults
+  while the other four sections assumed four people. Customers see this
+  immediately. Never repeat it.
+- "For two adults" in one section and "for a family of four" in another
+  is WRONG. "For a family of four" in ALL sections is RIGHT.
+- "Serves 2" in recipes alongside "4 servings" in meal prep is WRONG.
+  "Serves 4" in ALL recipes and ALL prep batches is RIGHT.
 """
 
 #: Degeneracy floor for generated sections (15% of the word ceiling). A
@@ -308,6 +319,40 @@ def _quality_target() -> float:
         return float(TARGET_SECTION_QUALITY)
     except Exception:
         return 9.0
+
+
+def _household_size() -> int:
+    """Shared household size for every section of the product.
+
+    Reads ``HOUSEHOLD_SIZE`` from ``build_pipeline`` lazily (avoids a
+    circular import); defaults to 4 when unavailable. A single pipeline
+    constant — not prompt advice — because three builds proved the model
+    rediscovers the 2-person calendar optimum no matter what the prompt
+    says.
+    """
+    try:
+        from build_pipeline import HOUSEHOLD_SIZE
+
+        return max(1, int(HOUSEHOLD_SIZE))
+    except Exception:
+        return 4
+
+
+def _household_context() -> str:
+    """Mandatory household paragraph injected into every section prompt."""
+    size = _household_size()
+    people = "person" if size == 1 else "people"
+    family = {2: "two", 3: "three", 4: "four", 6: "six"}.get(size)
+    phrase = (
+        f"for a family of {family}" if family
+        else f"for a household of {size} {people}"
+    )
+    return (
+        f"HOUSEHOLD CONTEXT (mandatory): All sections assume {size} "
+        f"{people}. All calculations, portions, and assumptions are for "
+        f"{size} {people} — write {phrase!r} in EVERY section, never a "
+        "different household size."
+    )
 
 
 #: Rendered body width in CSS pixels. The screenshot viewport is set to
@@ -1077,11 +1122,50 @@ Respond with ONLY a number between 0 and 10.
             match = re.search(r"\b(\d+(?:\.\d+)?)\b", response)
             if match:
                 score = float(match.group(1))
-                return min(10.0, max(0.0, score))
+                score = min(10.0, max(0.0, score))
+            else:
+                score = 5.0
         except Exception:
-            pass
+            score = 5.0
 
-        return 5.0  # Default middle score if parsing fails
+        # Deterministic structural penalty: the model scorer never spots a
+        # dangling heading (Templates 1 and 3 shipped one each), so a
+        # mechanical check docks the score and forces another iteration.
+        structural_issues = self._check_structural_issues(content)
+        if structural_issues:
+            _console.print(
+                f"[yellow]  '{section_name}' structural issues: "
+                f"{'; '.join(structural_issues)} (-2.0)[/yellow]"
+            )
+            score = max(0.0, score - 2.0)
+        return score
+
+    def _check_structural_issues(self, content: str) -> List[str]:
+        """Check for mechanical structural defects in a section draft.
+
+        Currently detects dangling headings: a ``#``-style heading whose
+        next non-blank line is missing, another heading, or the end of the
+        section. Deterministic — no model call — so defects the scorer is
+        blind to still cost score and trigger regeneration.
+
+        Args:
+            content: The draft section text.
+
+        Returns:
+            A list of human-readable issue descriptions (empty when clean).
+        """
+        issues: List[str] = []
+        lines = (content or "").splitlines()
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped.startswith("#"):
+                continue
+            following = [
+                other.strip() for other in lines[index + 1:] if other.strip()
+            ]
+            if not following or following[0].startswith("#"):
+                issues.append(f"dangling heading: {stripped[:80]}")
+        return issues
 
     def _generate_improvement_feedback(
         self, content: str, section_name: str, current_score: float
@@ -1677,7 +1761,8 @@ Be concise and actionable. Format as:
                 f"Complete '{title}' section for a {product_name} ({audience}) "
                 "with full tables/checklists and realistic example rows. "
                 f"MAXIMUM {MAX_WORDS_PER_SECTION} WORDS. DO NOT EXCEED. "
-                "Every table must be complete. End with a clear conclusion."
+                "Every table must be complete. End with a clear conclusion. "
+                f"{_household_context()}"
             )
             guidance = section_guidance_by_heading(title)
             if guidance:
