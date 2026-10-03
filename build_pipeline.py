@@ -148,6 +148,69 @@ PRODUCT_PROFILES: Dict[str, Dict[str, Any]] = {
             ),
         ),
     },
+    # Generalization probe (Directive 16): habit tracker, chosen because it
+    # is a canonical popular niche distinct from meal planning and budget
+    # tracking. Live Scout research was unavailable (SearXNG outage), so
+    # these section TITLES are product design; all content is the Builder's.
+    "habit_tracker": {
+        "product_name": "Daily Habit Tracker",
+        "niche": "habit_tracker",
+        "price": 15,
+        "opportunity": {
+            "product_name": "Daily Habit Tracker",
+            "target_audience": (
+                "busy professionals and students building consistent "
+                "daily habits"
+            ),
+            "pain_point": (
+                "habits fade without tracking; streaks, reminders, and "
+                "reviews live in scattered apps or nowhere"
+            ),
+            "estimated_price": 15,
+            "unique_value_proposition": (
+                "One template that defines habits, tracks daily check-ins, "
+                "counts streaks, and reviews monthly progress"
+            ),
+            "estimated_build_time": "2 hours",
+        },
+        "sections": (
+            (
+                "Habit Dashboard",
+                ("habit dashboard", "dashboard", "overview"),
+                "Habit dashboard — at-a-glance status table of all active "
+                "habits with today/yesterday checkmarks and current "
+                "streaks, at least 150 words",
+            ),
+            (
+                "Habit Library",
+                ("habit library", "habit list", "habits"),
+                "Habit library — starter catalog of 15-20 example habits "
+                "across health, focus, learning, and home with frequency "
+                "and difficulty tags, at least 150 words",
+            ),
+            (
+                "Daily Check-in",
+                ("daily check-in", "check-in", "daily log"),
+                "Daily check-in — Markdown checklist routine for morning "
+                "and evening with per-habit checkboxes and a notes line, "
+                "at least 150 words",
+            ),
+            (
+                "Streak Tracker",
+                ("streak tracker", "streaks", "consistency"),
+                "Streak tracker — 30-day grid tables per habit with streak "
+                "rules, freeze-day policy, and restart protocol, at "
+                "least 150 words",
+            ),
+            (
+                "Monthly Review",
+                ("monthly review", "review", "reflection"),
+                "Monthly review — completion-rate table, best/worst habit "
+                "analysis prompts, and next-month planning checklist, at "
+                "least 150 words",
+            ),
+        ),
+    },
     "weekly_meal_planning": {
         "product_name": "Weekly Meal Planner",
         "niche": "meal_planning",
